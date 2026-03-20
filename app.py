@@ -20,9 +20,9 @@ MATERIAL_DB = {
 }
 
 # ==========================================
-# 2. 核心物理测算引擎 (搭载复配骨架支撑算法)
+# 2. 核心物理测算引擎 (孔隙率变为纯计算输出)
 # ==========================================
-def predict_coating_performance_from_mass(resin_n, resin_mass, resin_solid, resin_density, active_fillers, thickness, porosity):
+def predict_coating_performance_from_mass(resin_n, resin_mass, resin_solid, resin_density, active_fillers, thickness):
     v_resin = (resin_mass * (resin_solid / 100.0)) / resin_density
     
     total_filler_volume = 0.0
@@ -44,24 +44,22 @@ def predict_coating_performance_from_mass(resin_n, resin_mass, resin_solid, resi
         oil_vol_i = (mass_i * (dynamic_oa_i / 100.0)) / 0.935
         total_oil_volume_needed += oil_vol_i
 
+    # 如果没有粉体，就是致密清漆，孔隙率为0
     if total_filler_volume == 0:
-        base_E = 0.85 + (thickness/500.0)*0.08 + (porosity/100.0)*0.02
-        return 5.0, min(0.99, base_E), 0.0, 45.0, porosity, []
+        base_E = 0.85 + (thickness/500.0)*0.08
+        return 5.0, min(0.99, base_E), 0.0, 45.0, 0.0, 0.0, []
 
     calculated_pvc = (total_filler_volume / (v_resin + total_filler_volume)) * 100.0
     dynamic_cpvc = (total_filler_volume / (total_filler_volume + total_oil_volume_needed)) * 100.0
 
-    auto_porosity = 0.0
+    # 🌟 彻底修正：孔隙率完全由高 PVC 缺胶产生 (Auto-Porosity)
+    effective_porosity = 0.0
     if calculated_pvc > dynamic_cpvc:
-        auto_porosity = (calculated_pvc - dynamic_cpvc) * 0.6  
-        
-    effective_porosity = min(60.0, porosity + auto_porosity)
+        # 经验常数 0.7：并非所有超出 CPVC 的体积都会转化为有效光学孔隙，存在堆叠损耗
+        effective_porosity = min(55.0, (calculated_pvc - dynamic_cpvc) * 0.7)  
 
-    # 🌟 核心升级 1：识别复配体系中的大颗粒“骨架”体积占比 (Spacer Ratio)
-    # 凡是粒径大于等于 3.0 微米的，全部视为撑开空间的骨架填料
     spacer_volume = sum(f['true_volume'] for f in active_fillers if f['size'] >= 3.0)
     spacer_ratio = spacer_volume / max(0.0001, total_filler_volume)
-
 
     # --- 多组分 Mie 散射物理池化 ---
     SCATTERING_MULTIPLIER = 8.8  
@@ -69,7 +67,6 @@ def predict_coating_performance_from_mass(resin_n, resin_mass, resin_solid, resi
 
     n_host = resin_n * (1.0 - effective_porosity/100.0) + 1.0 * (effective_porosity/100.0)
     
-    # 🌟 核心升级 2：强化空气微孔带来的全内反射 (TIR) 增益，空气是最好的骨架！
     tir = 1.0 + (effective_porosity/100.0 * 2.5) 
     
     pooled_scattering = 0.0
@@ -108,14 +105,9 @@ def predict_coating_performance_from_mass(resin_n, resin_mass, resin_solid, resi
     
     R_pred = base_fresnel + (max_r - base_fresnel) * (1 - np.exp(-optical_thickness))
     
-    # 🌟 核心升级 3：动态拥挤惩罚缓解 (Dynamic Crowding Relief)
-    # 基础拥挤临界点设为 40%。
-    # 微孔 (effective_porosity) 和大粒径骨架 (spacer_ratio) 会极大地“撑开”距离，提高临界点！
     dynamic_crowding_threshold = 40.0 + (effective_porosity * 1.5) + (spacer_ratio * 25.0)
-    
     crowding_penalty = max(0, (calculated_pvc - dynamic_crowding_threshold) * 0.25)
     
-    # 只扣除真正的相干相消折损
     R_pred = max(5.0, R_pred - crowding_penalty)
     
     E_pred = 0.85 + (thickness/500.0)*0.08 + (calculated_pvc/100.0)*0.03 + (effective_porosity/100.0)*0.02
@@ -127,7 +119,7 @@ def predict_coating_performance_from_mass(resin_n, resin_mass, resin_solid, resi
 # 3. Streamlit 网页交互界面
 # ==========================================
 st.title("🔬 高反隔热涂层 | 工业级正向测算平台")
-st.markdown("系统内置 **「多组分骨架支撑(Spacer Effect)」** 引擎，精准还原大小粉体复配时的抗拥挤增益。")
+st.markdown("回归涂层物理本质：**干膜孔隙率不再是手动输入项，而是由系统基于配方的 PVC 与动态 CPVC 的差值自动推演而出。**")
 
 col1, col2 = st.columns([1.2, 1])
 
@@ -135,19 +127,16 @@ with col1:
     st.header("📝 第一步：输入车间配方表")
     with st.container(border=True):
         st.subheader("1. 连续相 (成膜物质)")
-        c1, c2, c3 = st.columns(3)
+        # 移除了孔隙率输入滑块！
+        c1, c2, c3, c4 = st.columns(4)
         with c1:
             resin_mass = st.number_input("乳液添加量 (质量份)", min_value=0.0, value=20.0, step=1.0)
         with c2:
             resin_solid = st.number_input("乳液固含 (%)", min_value=10.0, max_value=100.0, value=48.0, step=1.0)
         with c3:
-            resin_density = st.number_input("干树脂密度 (g/cm³)", min_value=0.8, max_value=2.0, value=1.05, step=0.01)
-            
-        c4, c5 = st.columns(2)
+            resin_density = st.number_input("干树脂密度", min_value=0.8, max_value=2.0, value=1.05, step=0.01)
         with c4:
-            resin_n = st.slider("干树脂折射率 (n)", 1.40, 1.60, 1.50, 0.01)
-        with c5:
-            porosity = st.slider("体系外加发泡/孔隙率 (%)", 0.0, 50.0, 5.0, 1.0)
+            resin_n = st.number_input("折射率 (n)", min_value=1.40, max_value=1.60, value=1.50, step=0.01)
 
     with st.container(border=True):
         st.subheader("2. 离散相 (填料加料单 - 最多5种)")
@@ -173,8 +162,9 @@ with col1:
 with col2:
     st.header("📊 第二步：测算结果与体系诊断")
     
+    # 执行测算 (去掉了 porosity 传参)
     R_pred, E_pred, calculated_pvc, dynamic_cpvc, effective_porosity, spacer_ratio, diagnostics = predict_coating_performance_from_mass(
-        resin_n, resin_mass, resin_solid, resin_density, active_fillers, thickness, porosity
+        resin_n, resin_mass, resin_solid, resin_density, active_fillers, thickness
     )
     
     st.markdown("### 🎯 终端光学与热力学指标")
@@ -186,17 +176,27 @@ with col2:
         
     st.divider()
     
-    st.markdown("### 🧪 多组分复配与微观结构诊断")
+    st.markdown("### 🧪 配方结构与微孔自动诊断")
     
-    if spacer_ratio > 0.05:
-        st.success(f"**💡 骨架支撑效应激活**：系统检测到配方中包含 **{spacer_ratio*100:.1f}%** 的大粒径体质填料(≥3μm)。它们有效撑开了高反射细粉的空间，大幅缓解了粒子拥挤导致的反射率折损！")
-    else:
-        st.warning(f"**细粉拥挤预警**：当前配方几乎全为细粉。若浓度过高极易发生光学相干相消。")
-
-    st.info(f"**当前动态临界点 (CPVC)：{dynamic_cpvc:.1f}%** | **实际 PVC：{calculated_pvc:.1f}%**")
+    # 将孔隙率作为重要诊断结果高亮展示
+    c_a, c_b, c_c = st.columns(3)
+    with c_a:
+        st.metric(label="系统临界点 (CPVC)", value=f"{dynamic_cpvc:.1f}%")
+    with c_b:
+        st.metric(label="实际浓度 (PVC)", value=f"{calculated_pvc:.1f}%", 
+                  delta="超临界" if calculated_pvc > dynamic_cpvc else "致密", delta_color="inverse" if calculated_pvc > dynamic_cpvc else "normal")
+    with c_c:
+        # 这个才是真正由算法根据配方“长”出来的孔隙率
+        st.metric(label="自动推演孔隙率", value=f"{effective_porosity:.1f}%",
+                  delta="产生干遮盖微孔" if effective_porosity > 0 else "无微孔")
     
     if calculated_pvc > dynamic_cpvc:
-        st.success(f"**💨 干遮盖增强触发**：实际 PVC 超越临界点，自动产生大量干遮盖气孔。当前最终有效孔隙率高达 **{effective_porosity:.1f}%**，全面放大全内反射效能！")
+        st.success(f"**💡 干遮盖增强触发**：实际 PVC 超出临界点，树脂已无法润湿所有粉体。系统计算得出干膜内将产生 **{effective_porosity:.1f}%** 的结构性空气微孔，这极大地拉低了背景折射率，放大了全内反射 (TIR)！")
+    else:
+        st.info("配方处于致密状态，树脂完全包裹粉体，不产生额外结构孔隙。")
+
+    if spacer_ratio > 0.05:
+        st.success(f"**🛠️ 骨架支撑激活**：检测到配方含 {spacer_ratio*100:.1f}% 的大粒径体质填料(≥3μm)，有效撑开了细粉，缓解了光学相干相消。")
         
     if diagnostics:
         df_diag = pd.DataFrame(diagnostics)
