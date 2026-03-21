@@ -20,7 +20,7 @@ MATERIAL_DB = {
 }
 
 # ==========================================
-# 2. 核心物理测算引擎 (修复大粉体基础散射)
+# 2. 核心物理测算引擎
 # ==========================================
 def predict_coating_performance_from_mass(resin_n, resin_mass, resin_solid, resin_density, active_fillers, thickness):
     v_resin = (resin_mass * (resin_solid / 100.0)) / resin_density
@@ -77,15 +77,11 @@ def predict_coating_performance_from_mass(resin_n, resin_mass, resin_solid, resi
         delta_n_i = max(0.01, n_i - n_host)
         opt_size_i = 0.5 / (2 * delta_n_i)
         
-        # 🌟 核心修正区：真实物理粉体的尺寸效能曲线
         if size_i <= opt_size_i:
-            # 偏小粉体：随粒径增大而效能提升
             size_efficiency_i = max(0.1, size_i / opt_size_i)
         else:
-            # 偏大粉体：改用幂函数衰减，保留大粉体中细颗粒分布及不规则晶面的贡献
             size_efficiency_i = (opt_size_i / size_i)**0.8 + 0.2
             
-        # 🌟 引入基础物理散射底色 (0.4) 和 折射率倍增器 (15.0)
         base_physical_scattering = 0.4
         scatter_i = (base_physical_scattering + delta_n_i * 15.0 * size_efficiency_i) * tir
         
@@ -148,20 +144,22 @@ with col1:
         active_fillers = []
         for i, tab in enumerate(tabs):
             with tab:
-                default_mat_idx = 7 if i == 0 else 0 # 默认第一个选重钙测试
+                default_mat_idx = 7 if i == 0 else 0 
                 mat = st.selectbox("选择填料材质", list(MATERIAL_DB.keys()), index=default_mat_idx, key=f"mat_{i}")
                 if mat != '无 (不添加)':
                     col_a, col_b = st.columns(2)
                     with col_a:
                         mass = st.number_input("添加量 (质量份)", 0.0, 500.0, 30.0 if i==0 else 10.0, 1.0, key=f"mass_{i}")
                     with col_b:
-                        size = st.slider("主体粒径 (μm)", 0.1, 20.0, 12.3 if i==0 else 1.0, 0.1, key=f"size_{i}")
+                        # 💡 核心改动：把粒径的 slider 换成了 number_input，支持 + 和 - 精准微调
+                        size = st.number_input("主体粒径 (μm)", min_value=0.1, max_value=50.0, value=12.3 if i==0 else 1.0, step=0.1, key=f"size_{i}")
                     if mass > 0:
                         active_fillers.append({'mat': mat, 'size': size, 'mass': mass})
 
     with st.container(border=True):
         st.subheader("3. 施工控制")
-        thickness = st.slider("目标干膜厚度 (μm)", 50, 600, 200, 10)
+        # 💡 核心改动：把膜厚的 slider 换成了 number_input，支持 + 和 - 精准微调，步长为 10
+        thickness = st.number_input("目标干膜厚度 (μm)", min_value=10, max_value=1000, value=200, step=10)
 
 with col2:
     st.header("📊 第二步：测算结果与体系诊断")
