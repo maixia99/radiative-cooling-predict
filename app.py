@@ -2,7 +2,7 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from scipy.integrate import simps
+from scipy.integrate import simpson as simps
 
 # ==========================================
 # 页面全局配置
