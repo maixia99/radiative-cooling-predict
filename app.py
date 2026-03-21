@@ -5,7 +5,7 @@ import pandas as pd
 st.set_page_config(page_title="高反隔热涂层 | 工业级正向测算平台", layout="wide")
 
 # ==========================================
-# 1. 材料数据库 
+# 1. 材料数据库 (回归纯净版，剔除白度变量)
 # ==========================================
 MATERIAL_DB = {
     '无 (不添加)': {'n': 1.0, 'uv_abs': 0.0, 'density': 1.0, 'oa': 0.0},
@@ -74,6 +74,7 @@ def predict_coating_performance_from_mass(resin_n, resin_mass, resin_solid, resi
         uv_abs_i = MATERIAL_DB[f['mat']]['uv_abs']
         size_i = f['size']
         
+        # 🌟 计算每种填料在当前背景下的理论最佳粒径
         delta_n_i = max(0.01, n_i - n_host)
         opt_size_i = 0.5 / (2 * delta_n_i)
         
@@ -88,16 +89,18 @@ def predict_coating_performance_from_mass(resin_n, resin_mass, resin_solid, resi
         pooled_scattering += scatter_i * vol_ratio
         pooled_uv_abs += uv_abs_i * vol_ratio
         
+        # 🌟 在输出诊断表中新增“理论最佳粒径”列
         diagnostics.append({
             '材料': f['mat'].split(' ')[0],
             '质量(份)': f['mass'],
             '实际粒径': f"{size_i} μm",
+            '理论最佳粒径': f"{opt_size_i:.2f} μm",
             '动态吸油率': f"{f['dynamic_oa']:.1f}",
             '综合散射贡献': f"{scatter_i*vol_ratio:.2f}",
             '粉体包占比': f"{vol_ratio*100:.1f}%"
         })
 
-    # --- K-M 渐进方程推演 ---
+    # --- K-M 渐进方程推演 (剥离了白度惩罚) ---
     optical_thickness = pooled_scattering * (calculated_pvc / 100.0) * (thickness / THICKNESS_SCALE)
     
     base_fresnel = 5.0
@@ -120,7 +123,7 @@ def predict_coating_performance_from_mass(resin_n, resin_mass, resin_solid, resi
 # 3. Streamlit 网页交互界面
 # ==========================================
 st.title("🔬 高反隔热涂层 | 工业级正向测算平台")
-st.markdown("回归真实粉体物理特性：已内置**宽粒径分布(PSD)**与**不规则晶面折射补偿**，精准还原重钙等体质填料的物理底色。")
+st.markdown("系统内置**「动态吸油量耦合」**与**「多分散粒径物理底色」**。自动推算干膜真实微孔与理论最佳粒径。")
 
 col1, col2 = st.columns([1.2, 1])
 
@@ -151,14 +154,12 @@ with col1:
                     with col_a:
                         mass = st.number_input("添加量 (质量份)", 0.0, 500.0, 30.0 if i==0 else 10.0, 1.0, key=f"mass_{i}")
                     with col_b:
-                        # 💡 核心改动：把粒径的 slider 换成了 number_input，支持 + 和 - 精准微调
                         size = st.number_input("主体粒径 (μm)", min_value=0.1, max_value=50.0, value=12.3 if i==0 else 1.0, step=0.1, key=f"size_{i}")
                     if mass > 0:
                         active_fillers.append({'mat': mat, 'size': size, 'mass': mass})
 
     with st.container(border=True):
         st.subheader("3. 施工控制")
-        # 💡 核心改动：把膜厚的 slider 换成了 number_input，支持 + 和 - 精准微调，步长为 10
         thickness = st.number_input("目标干膜厚度 (μm)", min_value=10, max_value=1000, value=200, step=10)
 
 with col2:
@@ -190,11 +191,15 @@ with col2:
                   delta="产生干遮盖微孔" if effective_porosity > 0 else "无微孔")
     
     if calculated_pvc > dynamic_cpvc:
-        st.success(f"**💡 干遮盖增强触发**：实际 PVC 超出临界点，自动产生 **{effective_porosity:.1f}%** 的结构性空气微孔，大幅放大全内反射 (TIR)。")
+        st.success(f"**💡 干遮盖增强触发**：实际 PVC 超出临界点，自动产生 **{effective_porosity:.1f}%** 的结构微孔，大幅放大散射威力。")
     else:
         st.info("配方处于致密状态，树脂完全包裹粉体，不产生额外结构孔隙。")
         
+    if spacer_ratio > 0.05:
+        st.success(f"**🛠️ 骨架支撑激活**：配方含 {spacer_ratio*100:.1f}% 的大粒径骨架(≥3μm)，有效缓解了细粉拥挤造成的光学相消。")
+
     if diagnostics:
         df_diag = pd.DataFrame(diagnostics)
-        st.markdown("**级配特征拆解表：**")
+        st.markdown("**级配特征与米氏散射(Mie)匹配表：**")
         st.dataframe(df_diag, use_container_width=True, hide_index=True)
+        st.caption("🔍 **提示**：当“实际粒径”越接近“理论最佳粒径”时，该填料对反射率的贡献效率越高。重钙/高岭土等大粒径填料偏离最佳粒径，主要提供骨架支撑和物理底色。")
