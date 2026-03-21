@@ -2,6 +2,7 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+# 🌟 修复 Scipy 版本兼容问题：使用 simpson 替代已废弃的 simps
 from scipy.integrate import simpson as simps
 
 # ==========================================
@@ -10,7 +11,7 @@ from scipy.integrate import simpson as simps
 st.set_page_config(page_title="高反隔热涂层 | 终极物理测算平台", layout="wide")
 
 # ==========================================
-# 1. 材料数据库 (引入 k0 紫外消光系数替代粗暴的 uv_abs)
+# 1. 材料数据库 (引入 k0 紫外消光系数)
 # ==========================================
 MATERIAL_DB = {
     '无 (不添加)': {'n': 1.0, 'k0': 0.0, 'density': 1.0, 'oa': 0.0},
@@ -18,7 +19,7 @@ MATERIAL_DB = {
     '氧化铝 (Al2O3)': {'n': 1.76, 'k0': 0.001, 'density': 3.9, 'oa': 20.0},
     '氧化锆 (ZrO2)': {'n': 2.15, 'k0': 0.001, 'density': 5.7, 'oa': 15.0},
     '氧化镧 (La2O3)': {'n': 1.95, 'k0': 0.001, 'density': 6.5, 'oa': 18.0},
-    '金红石钛白粉 (TiO2)': {'n': 2.70, 'k0': 0.08, 'density': 4.1, 'oa': 18.0}, # 钛白粉带有强烈紫外带隙吸收
+    '金红石钛白粉 (TiO2)': {'n': 2.70, 'k0': 0.08, 'density': 4.1, 'oa': 18.0}, 
     '高岭土 (Kaolin)': {'n': 1.56, 'k0': 0.005, 'density': 2.6, 'oa': 40.0}, 
     '碳酸钙/重钙 (CaCO3)': {'n': 1.59, 'k0': 0.002, 'density': 2.7, 'oa': 15.0},
     '二氧化硅 (SiO2)': {'n': 1.46, 'k0': 0.001, 'density': 2.2, 'oa': 25.0}
@@ -29,7 +30,7 @@ MATERIAL_DB = {
 # ==========================================
 @st.cache_data
 def get_solar_spectrum():
-    wl = np.linspace(0.3, 2.5, 150) # 150个波长节点，平衡精度与计算速度
+    wl = np.linspace(0.3, 2.5, 150) # 波长节点
     T = 5800 
     h, c, k = 6.626e-34, 3e8, 1.38e-23
     wl_m = wl * 1e-6
@@ -54,10 +55,10 @@ def percus_yevick_Sq(q, d, phi):
     return np.maximum(Sq, 1e-4)
 
 # ==========================================
-# 3. 核心大一统桥接引型 (前台配方单 -> 宏观光学)
+# 3. 核心大一统引擎 (前台配方单 -> 宏观光谱与热学)
 # ==========================================
 def calculate_coating_performance(resin_n, resin_mass, resin_solid, resin_density, active_fillers, thickness):
-    # --- A. 体积与临界点测算 (您的前台逻辑) ---
+    # --- A. 质量转体积与临界点测算 ---
     v_resin = (resin_mass * (resin_solid / 100.0)) / resin_density
     total_filler_volume = 0.0
     total_oil_volume_needed = 0.0 
@@ -89,7 +90,6 @@ def calculate_coating_performance(resin_n, resin_mass, resin_solid, resin_densit
 
     # --- B. 准备代入 RTE 的物理参数 ---
     v_total_solid = v_resin + total_filler_volume
-    # 计算包含孔隙的干膜总体积，以便算出真实的干膜体积分数 phi
     v_air = v_total_solid * (effective_porosity / 100.0) / (1 - effective_porosity / 100.0) if effective_porosity < 100 else 0
     v_total_film = v_total_solid + v_air
     
@@ -99,16 +99,16 @@ def calculate_coating_performance(resin_n, resin_mass, resin_solid, resin_densit
     diagnostics = []
     for f in active_fillers:
         mat_key = f['mat']
-        phi_i = f['true_volume'] / v_total_film # 🌟 真实的干膜内体积分数
+        phi_i = f['true_volume'] / v_total_film 
         fillers_for_rte.append({
             'd': f['size'], 'phi': phi_i, 
             'n_p': MATERIAL_DB[mat_key]['n'], 'k0': MATERIAL_DB[mat_key]['k0']
         })
         diagnostics.append({
             '材料': mat_key.split(' ')[0],
-            '实际质量': f['mass'],
-            '实际粒径': f"{f['size']} μm",
-            '动态吸油率': f"{f['dynamic_oa']:.1f}",
+            '质量': f['mass'],
+            '粒径': f"{f['size']} μm",
+            '吸油率': f"{f['dynamic_oa']:.1f}",
             '膜内真体积分数': f"{phi_i*100:.1f}%"
         })
 
@@ -116,13 +116,14 @@ def calculate_coating_performance(resin_n, resin_mass, resin_solid, resin_densit
     wl_array, I_sun = get_solar_spectrum()
     R_spectrum = []
     
-    theta = np.linspace(0, np.pi, 180) # 为了 APP 响应速度，积分节点降至 180
+    theta = np.linspace(0, np.pi, 180) 
     solid_angle_element = 2 * np.pi * np.sin(theta)
     
     phi_total_rte = sum(f['phi'] for f in fillers_for_rte)
     d_eff_rte = sum(f['d'] * f['phi'] for f in fillers_for_rte) / max(1e-5, phi_total_rte)
     d_large = max(f['d'] for f in fillers_for_rte)
     
+    # 动态 Saunderson 界面 k1
     k1 = ((n_host_eff - 1.0) / (n_host_eff + 1.0))**2
     theta_c = np.arcsin(1.0 / n_host_eff)
     mask_tir = theta > theta_c
@@ -136,22 +137,28 @@ def calculate_coating_performance(resin_n, resin_mass, resin_solid, resin_densit
             if phi <= 0: continue
             
             r = d / 2.0
-            N_density = phi / ((4.0/3.0) * np.pi * r**3)
             
-            # 截面计算
-            Q_sca = 2.0 * (abs(n_p - n_host_eff) / n_host_eff)**2 * (2 * np.pi * r * n_host_eff / wl)**2 
-            k_lambda = k0 * np.exp(- ((wl - 0.35)**2) / 0.02)
-            Q_abs = (4 * np.pi * k_lambda / wl) * r
+            # 🌟 核心量纲与光学截面修复区 🌟
+            delta_n_ratio = abs(n_p - n_host_eff) / n_host_eff
+            x_param = 2 * np.pi * r * n_host_eff / wl
+            x_eff = x_param * delta_n_ratio
             
-            Sigma_s_base = N_density * Q_sca * (np.pi * r**2)
-            Sigma_a_i = N_density * Q_abs * (np.pi * r**2)
+            # 1. 经验 Mie 共振饱和模型 (防止大颗粒散射截面无脑发散)
+            Q_sca = 3.0 * (x_eff**2) / (1.0 + x_eff**2)
             
-            # S(q) 与相函数解耦修正
+            # 2. 超级高斯带隙衰减 (四次方)，彻底斩断紫外吸收向可见光的致命“拖尾”
+            k_lambda = k0 * np.exp(- (max(0.0, wl - 0.38) / 0.05)**4)
+            
+            # 3. 连续介质物理学的严密体积截面换算
+            Sigma_s_base = (3.0 * phi * Q_sca) / (4.0 * r)
+            Sigma_a_i = (4.0 * np.pi * k_lambda / wl) * phi
+            
+            # --- S(q) 多体解耦与方向重塑 ---
             q = (4 * np.pi * n_host_eff / wl) * np.sin(theta / 2.0)
             Sq_eff = percus_yevick_Sq(q, d_eff_rte, phi_total_rte) * np.exp(- (q * d_large)**2 * 0.1)
             
-            x_param = np.pi * d / wl
-            g0 = min(0.95, max(0.1, 1.0 - 2.0/x_param)) if x_param > 2 else 0.1
+            x_param_hg = np.pi * d / wl
+            g0 = min(0.95, max(0.1, 1.0 - 2.0/x_param_hg)) if x_param_hg > 2 else 0.1
             p_theta = (1 - g0**2) / (4 * np.pi * (1 + g0**2 - 2*g0*np.cos(theta))**1.5)
             
             p_mod_raw = p_theta * Sq_eff
@@ -171,13 +178,13 @@ def calculate_coating_performance(resin_n, resin_mass, resin_solid, resin_densit
         else:
             g_total, global_p_mod = 0.0, np.ones_like(theta)/(4*np.pi)
             
-        # 动态 Saunderson k2 计算
+        # 动态 Saunderson k2 (捕捉全内反射)
         integral_hemi = simps(global_p_mod * np.sin(theta), theta)
         integral_tir = simps(global_p_mod[mask_tir] * np.sin(theta[mask_tir]), theta[mask_tir])
         k2 = integral_tir / integral_hemi if integral_hemi > 0 else 0.6
         k2 = min(max(k2, 0.1), 0.95)
         
-        # RTE 两流展开
+        # RTE 两流降阶 (Kubelka-Munk 形式)
         S_flux = Sigma_s_total * (1 - g_total) 
         K_flux = 2 * Sigma_a_total 
         
@@ -189,7 +196,7 @@ def calculate_coating_performance(resin_n, resin_mass, resin_solid, resin_densit
             tanh_arg = min(b * S_flux * thickness, 100.0)
             R_internal = 1 / (a + b * (1 / np.tanh(tanh_arg))) if tanh_arg > 1e-4 else 1.0
             
-        # Saunderson 边界耦合
+        # Saunderson 边界耦合折损
         R_measured = k1 + ((1 - k1) * (1 - k2) * R_internal) / max(1e-10, 1 - k2 * R_internal)
         R_spectrum.append(R_measured * 100.0)
         
@@ -198,7 +205,7 @@ def calculate_coating_performance(resin_n, resin_mass, resin_solid, resin_densit
     # 积分求算太阳光反射比 R_solar
     R_solar = simps(R_spectrum * I_sun, wl_array) / simps(I_sun, wl_array)
     
-    # 热发射率预估 (主要由高分子基体和总体积驱动)
+    # 热发射率预估 
     E_pred = 0.85 + (thickness/500.0)*0.08 + (calculated_pvc/100.0)*0.03 + (effective_porosity/100.0)*0.02
     E_pred = min(0.99, max(0.0, E_pred))
     
@@ -207,8 +214,8 @@ def calculate_coating_performance(resin_n, resin_mass, resin_solid, resin_densit
 # ==========================================
 # 4. Streamlit 网页交互界面
 # ==========================================
-st.title("🔬 高反隔热涂层 | 第一性原理测算引擎")
-st.markdown("内核已升级为 **RTE多波段传输方程 + Percus-Yevick解耦近似 + Saunderson动态界面边界**。输入工厂配方，秒级输出学术级光谱拟合。")
+st.title("🔬 高反隔热涂层 | 第一性原理物理测算引擎")
+st.markdown("内核已搭载 **多波段RTE + Percus-Yevick多体解耦 + 动态Saunderson界面修正**。完全消除数值虚高，还原真实物理世界。")
 
 col1, col2 = st.columns([1.1, 1.3])
 
@@ -218,28 +225,28 @@ with col1:
         st.subheader("1. 连续相 (成膜物质)")
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            resin_mass = st.number_input("乳液(质量份)", min_value=0.0, value=22.0, step=1.0)
+            resin_mass = st.number_input("乳液(份)", min_value=0.0, value=20.0, step=1.0)
         with c2:
             resin_solid = st.number_input("固含(%)", min_value=10.0, max_value=100.0, value=48.0, step=1.0)
         with c3:
             resin_density = st.number_input("干密度", min_value=0.8, max_value=2.0, value=1.05, step=0.01)
         with c4:
-            resin_n = st.number_input("折射率(n)", min_value=1.40, max_value=1.60, value=1.50, step=0.01)
+            resin_n = st.number_input("折射率", min_value=1.40, max_value=1.60, value=1.50, step=0.01)
 
     with st.container(border=True):
-        st.subheader("2. 离散相 (填料加料单 - 最多5种)")
+        st.subheader("2. 离散相 (填料加料单)")
         tabs = st.tabs(["填料 1", "填料 2", "填料 3", "填料 4", "填料 5"])
         active_fillers = []
         for i, tab in enumerate(tabs):
             with tab:
-                default_mat_idx = 5 if i == 0 else 0  # 默认填料1给钛白粉，展现光谱吸收
+                default_mat_idx = 5 if i == 0 else 0  # 默认测试高浓度钛白粉
                 mat = st.selectbox("选择填料材质", list(MATERIAL_DB.keys()), index=default_mat_idx, key=f"mat_{i}")
                 if mat != '无 (不添加)':
                     col_a, col_b = st.columns(2)
                     with col_a:
-                        mass = st.number_input("添加量 (质量份)", 0.0, 500.0, 20.0 if i==0 else 10.0, 1.0, key=f"mass_{i}")
+                        mass = st.number_input("添加量 (质量份)", 0.0, 500.0, 40.0 if i==0 else 10.0, 1.0, key=f"mass_{i}")
                     with col_b:
-                        size = st.number_input("主体粒径 (μm)", min_value=0.1, max_value=50.0, value=0.3 if i==0 else 1.0, step=0.1, key=f"size_{i}")
+                        size = st.number_input("主体粒径 (μm)", min_value=0.01, max_value=50.0, value=0.3 if i==0 else 1.0, step=0.05, key=f"size_{i}")
                     if mass > 0:
                         active_fillers.append({'mat': mat, 'size': size, 'mass': mass})
 
@@ -248,15 +255,13 @@ with col1:
         thickness = st.number_input("目标干膜厚度 (μm)", min_value=10, max_value=1000, value=200, step=10)
 
 with col2:
-    st.header("📊 第二步：多物理场诊断与光谱")
+    st.header("📊 第二步：多维物理诊断与光谱")
     
-    # 执行测算（这里可能需要约 0.5-1 秒的后台密集计算，这是计算多维光谱积分的极速表现了）
-    with st.spinner("🚀 正在激活 RTE 多体辐射传输引擎求解中..."):
+    with st.spinner("🚀 正在执行高维多体辐射传输积分求解..."):
         R_sol, E_pred, pvc, cpvc, porosity, diagnostics, wl_array, R_spectrum = calculate_coating_performance(
             resin_n, resin_mass, resin_solid, resin_density, active_fillers, thickness
         )
     
-    # 顶部核心指标卡片
     st.markdown("### 🎯 宏观热学指标")
     m1, m2 = st.columns(2)
     with m1:
@@ -266,13 +271,10 @@ with col2:
         
     st.divider()
     
-    # 🌟 激动人心的可视化：直接在网页画出反射光谱！
     st.markdown("### 🌈 全波段物理反射光谱 $R(\lambda)$")
     if wl_array is not None:
         fig, ax = plt.subplots(figsize=(8, 3.5), dpi=120)
         ax.plot(wl_array, R_spectrum, color='crimson', linewidth=2, label="Predicted Reflectance")
-        
-        # 画出 AM1.5 太阳光谱作为阴影背景
         _, I_sun = get_solar_spectrum()
         ax.fill_between(wl_array, 0, I_sun/np.max(I_sun)*100, color='gold', alpha=0.15, label='Solar Energy Distribution')
         
@@ -290,9 +292,9 @@ with col2:
         st.metric(label="系统临界点 (CPVC)", value=f"{cpvc:.1f}%")
     with c_b:
         st.metric(label="实际浓度 (PVC)", value=f"{pvc:.1f}%", 
-                  delta="触发干遮盖" if pvc > cpvc else "体系致密", delta_color="inverse" if pvc > cpvc else "normal")
+                  delta="触发干遮盖微孔" if pvc > cpvc else "体系致密", delta_color="inverse" if pvc > cpvc else "normal")
     with c_c:
-        st.metric(label="连续相有效孔隙率", value=f"{porosity:.1f}%")
+        st.metric(label="有效结构孔隙率", value=f"{porosity:.1f}%")
 
     if diagnostics:
         df_diag = pd.DataFrame(diagnostics)
